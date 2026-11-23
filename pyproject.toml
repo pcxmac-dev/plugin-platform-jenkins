@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "plugin-platform-jenkins"
+version = "0.1.0"  # the plugin's own release (CHANGELOG.md); the platform shows it on the plugin's page
+description = "Jenkins for Liminal: whether it is installed here or answers at its address, its version, its jobs, build queue and nodes, and a job's build once the platform's page confirms it."
+readme = "README.md"
+requires-python = ">=3.10"
+# the library it plugs into (the machine kind: liminal_libs.machines, plugin API 2.2: what it attaches to, its API
+# cards, since 1.49.0); 1.62.0's machines/endpoint.py sends its requests (nothing taken from the environment, no
+# redirect followed) and words a connection's trouble; 1.63.0 reads what it says of the interface it shares (READ_HOOKS,
+# the Internal API tab), which its tests hold it to
+dependencies = ["liminal-libs>=1.63.0"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.entry-points."liminal.providers"]
+jenkins = "plugin_platform_jenkins"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
