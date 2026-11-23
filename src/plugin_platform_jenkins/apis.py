@@ -38,19 +38,22 @@ JENKINS = Api(
     about=("Jenkins' remote access API: every page of Jenkins answers under its .../api/ in XML, in JSON (with JSONP) "
            "and as a Python literal, and the actions behind its buttons (a build, a job's configuration, a node taken "
            "offline) answer a POST. The plugin reads the JSON flavour, asking with a tree for only what its page shows "
-           "and at most 200 rows of a list; Jenkins' version comes in the X-Jenkins header of every answer. It asks a "
-           "job's build once the platform's page has confirmed it, and makes no other change."),
+           "and at most 200 rows of a list; Jenkins' version comes in the X-Jenkins header of its top page and of its "
+           ".../api/ pages. It asks a job's build once the platform's page has confirmed it, and makes no other "
+           "change."),
     base=("JENKINS_URL (http://127.0.0.1:8080 unless set): /api/json, /queue/api/json, /computer/api/json, "
           "/job/NAME/..."),
     version=("Jenkins 2's remote access API, its JSON flavour; read against the LTS 2.580.2 and the weekly 2.591 "
              "(their pages, 2026-11-22)"),
-    auth=("HTTP basic authentication with a user name and one of its API tokens, sent with the first request (Jenkins "
-          "answers 403, not 401, to a request without it); only to JENKINS_URL, over https or on this machine. "
-          "Requests authenticating with an API token are exempt from CSRF protection; any other POST sends the crumb "
-          "/crumbIssuer/api/json gives, with the session cookie it came with, and the plugin sends it with a build "
-          "whenever Jenkins issues one"),
+    auth=("HTTP basic authentication with a user name and one of its API tokens (Jenkins answers 403, not 401, to a "
+          "request without it, and 401 with WWW-Authenticate: Basic realm=\"Jenkins\" to a token it refuses); only to "
+          "JENKINS_URL, over https or on this machine, and there once an unsigned first ask was answered with "
+          "X-Jenkins. Requests authenticating with an API token are exempt from CSRF protection; any other POST sends "
+          "the crumb /crumbIssuer/api/json gives, with the session cookie it came with, and the plugin sends it with a "
+          "build whenever Jenkins issues one"),
     limits=("none published: Jenkins' own capacity. The plugin reads at most once every 30 s unless Read again asks "
-            "now (three GETs a read, each waiting 5 s for each socket operation), and 4 MB of an answer at most"),
+            "now (three GETs a read, after one unsigned GET at an address not yet answered as Jenkins, each waiting "
+            "5 s for each socket operation), and 4 MB of an answer at most"),
     costs="nothing: Jenkins is free and open source (the MIT licence)",
     links=(
         Link("Remote access API", _REMOTE, "docs"),
@@ -85,13 +88,14 @@ JENKINS = Api(
     ),
     areas=(
         Area("Jenkins itself", "/api/json: the controller (its jobs, views, mode, whether it is getting ready to shut "
-                               "down), and its version in the X-Jenkins header of every answer",
+                               "down), and its version in the X-Jenkins header of its top page and its .../api/ pages",
              _REMOTE, covered="its version, its jobs, and whether it is getting ready to shut down"),
         Area("Jobs", "/job/NAME/api/json: a job's colour, builds, health and parameters; a folder's jobs under it "
                      "(/job/FOLDER/job/NAME)", _javadoc("hudson/model/Job"),
              covered="listed with their state and last build (the Jobs table); a job looked at before its build"),
-        Area("Builds", "/job/NAME/build and /buildWithParameters (a build asked), /job/NAME/NUMBER/api/json (one "
-                       "build), its /stop, /term and /kill", _REMOTE, covered="a job's build asked, once confirmed"),
+        Area("Builds", "/job/NAME/build and /buildWithParameters (a build asked; of a multibranch project or an "
+                       "organization folder, a scan), /job/NAME/NUMBER/api/json (one build), its /stop, /term and "
+                       "/kill", _REMOTE, covered="a job's build asked, once confirmed (never a scan)"),
         Area("Build queue", "/queue/api/json: the builds waiting, why and since when; one item, and one taken off it",
              _javadoc("hudson/model/Queue.Item"), covered="the Build queue table"),
         Area("Nodes", "/computer/api/json: the built-in node and the agents, online or not, and their executors; a "
@@ -111,7 +115,9 @@ JENKINS = Api(
     calls=(
         Call("GET /api/json", "the controller: its jobs, each one's name, colour, buildability, last build and "
                               "parameters (tree jobs[...]{0,200}), and whether it is getting ready to shut down",
-             "Jenkins itself", used="the Jobs table, the version (X-Jenkins) and whether you are signed in",
+             "Jenkins itself", used=("the Jobs table, the version (X-Jenkins) and whether you are signed in; first "
+                                     "asked unsigned (tree quietingDown) at an address not yet answered as Jenkins, "
+                                     "the token going with the asks after it once its answer has X-Jenkins"),
              docs=_REMOTE),
         Call("GET /queue/api/json", "the build queue's items (tree items[...]{0,200})", "Build queue",
              used="the Build queue table", docs=_javadoc("hudson/model/Queue.Item")),
@@ -122,10 +128,13 @@ JENKINS = Api(
              docs=_javadoc("hudson/model/Job")),
         Call("GET /crumbIssuer/api/json", "a crumb and the request field it goes in (404: none issued)",
              "CSRF protection", used="Build…: asked first, and sent with the build when Jenkins gives one", docs=_CSRF),
-        Call("POST /job/{name}/build", "a build of a job without parameters queued (its queue item in Location)",
-             "Builds", used="Build… a job without parameters", docs=_REMOTE, writes=True),
+        Call("POST /job/{name}/build", "a build of a job without parameters queued (201, its queue item in Location; "
+                                       "302 back to the job's page: none queued)", "Builds",
+             used=("Build… a job without parameters (never a multibranch project's or an organization folder's: "
+                   "a scan)"), docs=_REMOTE, writes=True),
         Call("POST /job/{name}/buildWithParameters", "a build of a job with parameters queued, their defaults unless "
-                                                     "sent", "Builds",
+                                                     "sent (201 a new queue item; 303 the same build already waiting; "
+                                                     "302 back to the job's page: none queued)", "Builds",
              used="Build… a job with parameters (those typed, form-encoded)", docs=_REMOTE, writes=True),
         Call("GET /job/{name}/{number}/api/json", "one build: its result, its length, what started it", "Builds",
              docs=_javadoc("hudson/model/Run")),

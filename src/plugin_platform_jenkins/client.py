@@ -7,13 +7,18 @@ address, as one user, nothing followed off it.
     got, crumb = j.post("/job/app/build")                     # the crumb asked first, sent when Jenkins gives one
 
 The address is the user's (settings.py: JENKINS_URL), and every request goes to it and to nothing else: a path is asked
-under it, never as an address of its own, and a redirect is never followed but said in words (where it pointed, without
-its query). The token goes in an HTTP basic authorization header with the first request (Jenkins answers 403, not 401,
-to a request without one: its "Authenticating scripted clients"), and only where the address allows it (`Target.sends`:
-https, or this machine); it is taken out of every word said, with the header's encoding of it, a crumb and the session
-cookie that came with the crumb. Each request waits TIMEOUT_S for each socket operation and reads MOST bytes at most,
-whole within twice that wait; none is sent a second time. Sending is the library's (endpoint.requests_transport:
-nothing taken from the environment, no proxy, no redirect followed); a test hands its own transport.
+under it, never as an address of its own, and a redirect is never followed. One is said in words (where it pointed,
+without its query), unless its asker takes it as the answer where it points (`lands`: a build's 303 to the queue item it
+joined, its 302 back to the job's own page when Jenkins queued nothing). A client that is not `anonymous` sends the
+token in an HTTP basic authorization header with each request (Jenkins answers 403, not 401, to a request without one:
+its "Authenticating scripted clients"), and only where the address allows it (`Target.sends`: https, or this machine);
+the plugin asks an address anonymously first, and signs only once Jenkins answered there (__init__.py). The token is
+taken out of every word said, with the header's encoding of it, a crumb and the session cookie that came with the
+crumb, before any word is cut. Each request waits TIMEOUT_S for each socket operation and reads MOST bytes at most, its
+body whole within twice that wait: the bound is the body's alone (the status line and the headers wait TIMEOUT_S a
+receive, however many receives they take; a bound on them all is the library's transport's to give). None is sent a
+second time. Sending is the library's (endpoint.requests_transport: nothing taken from the environment, no proxy, no
+redirect followed); a test hands its own transport.
 """
 from __future__ import annotations
 
@@ -23,7 +28,7 @@ import re
 import time
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
-from urllib.parse import quote, urlencode, urlsplit
+from urllib.parse import quote, unquote, urlencode, urljoin, urlsplit, urlunsplit
 
 from liminal_libs.instances import is_local
 from liminal_libs.machines.endpoint import requests_transport, trouble
@@ -36,9 +41,13 @@ MOST = 4 << 20  # bytes read of one answer at most (two hundred jobs are some 60
 AGENT = "Liminal platform plugin (Jenkins)"  # a fixed name: nothing of the user's, nothing of the machine's
 OK = (200, 201, 202, 204)
 REDIRECTS = frozenset({301, 302, 303, 307, 308})
-VERSION = re.compile(r"^[0-9][0-9A-Za-z.+_-]{0,63}$")  # X-Jenkins: 2.580.2, 2.591, 2.592-SNAPSHOT
-FIELD = re.compile(r"^[A-Za-z0-9._-]{1,64}$")  # the crumb's request field: Jenkins-Crumb
-CRUMB = re.compile(r"^[A-Za-z0-9+/=._:-]{1,512}$")  # a crumb: a hash, in hexadecimal
+# each matched whole (fullmatch): a value with a line break after it is none of them
+VERSION = re.compile(r"[0-9][0-9A-Za-z.+_-]{0,63}")  # X-Jenkins: 2.580.2, 2.591, 2.592-SNAPSHOT
+FIELD = re.compile(r"[A-Za-z0-9._-]{1,64}")  # the crumb's request field: Jenkins-Crumb
+CRUMB = re.compile(r"[A-Za-z0-9+/=._:-]{1,512}")  # a crumb: a hash, in hexadecimal
+# Jenkins' own refusal of a user name and token: what Spring Security's BasicAuthenticationEntryPoint answers, as
+# Jenkins' BasicHeaderProcessor hands it a refused Authorization header (HTTP 401, and no X-Jenkins header on it)
+CHALLENGE = re.compile(r'\s*(?i:basic)\s+(?i:realm)\s*=\s*"Jenkins"\s*')
 SESSION = re.compile(r"(?:^|[\s,;])(JSESSIONID[A-Za-z0-9._-]{0,64})=([A-Za-z0-9._~+/=-]{1,512})")  # Set-Cookie's
 QUEUED = re.compile(r"/queue/item/(\d{1,18})/?$")  # a build's answer names its queue item in Location
 NAME_MOST = 255  # characters of one part of a job's name
@@ -135,11 +144,60 @@ def queued(answer: Answer) -> int | None:
     return int(found.group(1)) if found else None
 
 
+def version_of(answer: Answer) -> str:
+    """The version an answer's X-Jenkins header says ("" when it has none, or one that is no version): how Jenkins
+    marks its top page and its .../api/ pages."""
+    said = answer.header("x-jenkins").strip()
+    return said if VERSION.fullmatch(said) else ""
+
+
+def challenged(answer: Answer) -> bool:
+    """Whether an answer is Jenkins' own refusal of a user name and its token: HTTP 401 with WWW-Authenticate: Basic
+    realm="Jenkins" (CHALLENGE), which carries no X-Jenkins header."""
+    return answer.status == 401 and bool(CHALLENGE.fullmatch(answer.header("www-authenticate")))
+
+
+def landing(asked: str, answer: Answer) -> str:
+    """Where a redirect points: its Location resolved against the address asked, the dot segments of its path taken
+    out as a browser takes them out (Jenkins' "." after a POST of /job/app/build is /job/app/); "" for none, or one that
+    is no address. Never asked: only read."""
+    text = answer.header("location").strip()
+    if not text or _control(text):
+        return ""
+    try:
+        parts = urlsplit(urljoin(asked, text))
+        _ = parts.port  # a port that is none: no address
+    except ValueError:
+        return ""
+    steps: list[str] = []
+    for step in parts.path.split("/"):
+        if step == "..":
+            if steps:
+                steps.pop()
+        elif step not in ("", "."):
+            steps.append(step)
+    last = "/" if steps and parts.path.endswith(("/", "/.", "/..")) else ""  # a page's last slash, kept
+    return urlunsplit((parts.scheme, parts.netloc, "/" + "/".join(steps) + last, "", ""))
+
+
+def same_page(where: str, page: str) -> bool:
+    """Whether two addresses name the same page: their paths, step by step and unquoted, the last slash aside (a
+    Location may name Jenkins by another host name than the one asked, as its root URL is set)."""
+    def steps(url: str) -> list[str]:
+        try:
+            return [unquote(s) for s in urlsplit(url).path.split("/") if s]
+        except ValueError:
+            return []
+    return bool(where) and steps(where) == steps(page)
+
+
 class Jenkins:
     """Jenkins at one address, as one user (the module's docstring). `transport(method, url, headers, body, timeout,
     stream)` -> endpoint.Reply is a test's stand-in, else the library's requests_transport; `note(status, seconds,
     error)` is told of every request as it ends (what api_facts says); `anonymous`: the token is not sent, even where it
-    may be. Making one sends nothing."""
+    may be. Making one sends nothing. `version` is the X-Jenkins header of the last answer that said it, and `unmarked`
+    counts its GETs that no answer with one came to (none came, or one without it): what the plugin's trust in the
+    address goes on."""
 
     def __init__(self, target: Target, *, transport: Callable | None = None, timeout: float = TIMEOUT_S,
                  clock: Callable[[], float] = time.monotonic, note: Callable | None = None, anonymous: bool = False):
@@ -156,6 +214,7 @@ class Jenkins:
             self._auth = "Basic " + base64.b64encode(pair).decode("ascii")
         self._secrets = [s for s in (target.token, self._auth, self._auth[6:]) if s]
         self.version = ""  # the X-Jenkins header of the last answer that said it
+        self.unmarked = 0  # its GETs answered without a valid X-Jenkins header, or not answered at all
 
     @property
     def signed(self) -> bool:
@@ -195,7 +254,7 @@ class Jenkins:
             return {}, "no crumb: Jenkins' CSRF protection issues none"
         data = got.data if isinstance(got.data, Mapping) else {}
         name, value = str(data.get("crumbRequestField") or ""), str(data.get("crumb") or "")
-        if not FIELD.match(name) or not CRUMB.match(value):
+        if not FIELD.fullmatch(name) or not CRUMB.fullmatch(value):
             raise JenkinsError("GET /crumbIssuer/api/json: its answer holds no crumb as Jenkins gives one "
                                "(crumbRequestField and crumb)", got.status, self.version)
         self.hide(value)
@@ -206,16 +265,19 @@ class Jenkins:
             headers["Cookie"] = f"{cookie.group(1)}={cookie.group(2)}"
         return headers, f"its crumb sent in {name}"
 
-    def post(self, path: str, form=None) -> tuple[Answer, str]:
-        """A change: the crumb asked first (crumb), then the POST with it; its answer, and the crumb in words."""
+    def post(self, path: str, form=None, ok: Iterable[int] = OK, lands: Callable | None = None) -> tuple[Answer, str]:
+        """A change: the crumb asked first (crumb), then the POST with it (`ok` and `lands` as ask takes them); its
+        answer, and the crumb in words."""
         extra, said = self.crumb()
-        return self.ask("POST", path, form=form, headers=extra), said
+        return self.ask("POST", path, form=form, headers=extra, ok=ok, lands=lands), said
 
     def ask(self, method: str, path: str, *, params: Mapping | None = None, form=None,
-            headers: Mapping[str, str] | None = None, ok: Iterable[int] = OK) -> Answer:
+            headers: Mapping[str, str] | None = None, ok: Iterable[int] = OK, lands: Callable | None = None) -> Answer:
         """One request and its whole answer when its status is one of `ok`; else a JenkinsError in words. `form`: a
         POST's fields, sent form-encoded as Jenkins' own pages send them (pairs, or a mapping); a POST without one sends
-        an empty body. A redirect is never followed (the module's docstring)."""
+        an empty body. A redirect is never followed: it is the answer only when its status is one of `ok` and, given
+        `lands(status, where)`, that takes where it points (landing); any other is said in words (the module's
+        docstring)."""
         method = str(method).upper()
         url = self.url(path, params)
         lead = f"{method} {self._where(path)}"
@@ -230,20 +292,25 @@ class Jenkins:
         elif method == "POST":
             body = b""
         sent.update(headers or {})
+        oks = set(ok)
         started = self._clock()
+        marked = False
         try:
             answer = self._send(method, url, sent, body, started, lead)
-            said = answer.header("x-jenkins").strip()
-            version = said if VERSION.match(said) else ""
+            version = version_of(answer)
             if version:
-                self.version = version
-            if answer.status in REDIRECTS:
+                self.version, marked = version, True
+            if answer.status in REDIRECTS and not (
+                    answer.status in oks and (lands is None or lands(answer.status, landing(url, answer)))):
                 raise JenkinsError(self._redirected(lead, answer), answer.status, version)
-            if answer.status not in set(ok):
+            if answer.status not in oks:
                 raise JenkinsError(self.words(f"{lead}: {self._refusal(answer)}"), answer.status, version)
         except JenkinsError as e:
             self._told(e.status, started, str(e))
             raise
+        finally:
+            if method == "GET" and not marked:
+                self.unmarked += 1
         self._told(answer.status, started, "")
         return answer
 
@@ -266,15 +333,17 @@ class Jenkins:
 
     def _whole(self, reply, started: float, lead: str) -> Answer:
         """A reply read under the bounds: refused past MOST bytes (by what it says its length is, before a byte is read;
-        else as it comes), and when it is not whole within twice the wait; a redirect's body is not read at all."""
+        else as it comes), and when its body is not whole within twice the wait (the status line and the headers came
+        before: the module's docstring); a redirect's body is not read at all."""
         status = int(reply.status)
         headers = _lower(reply.headers)
         if status in REDIRECTS:
             return Answer(status, headers, b"", self._clock() - started)
-        coding = headers.get("content-encoding", "").strip().lower()
-        if coding not in ("", "identity"):
-            raise JenkinsError(f"{lead}: its answer came {coding[:20]}-encoded, which was not asked for: not read",
-                               status)
+        coding = headers.get("content-encoding", "").strip()
+        if coding.lower() not in ("", "identity"):
+            shown = self.words(coding)[:20].lower()  # the header as it came, its secrets taken out before it is cut
+            raise JenkinsError(self.words(f"{lead}: its answer came {shown}-encoded, which was not asked for: not "
+                                          "read"), status)
         length = headers.get("content-length", "").strip()
         if length.isdigit() and int(length) > MOST:
             raise JenkinsError(f"{lead}: its answer is {int(length):,} bytes, more than the {MOST:,} read of one: "
@@ -313,13 +382,15 @@ class Jenkins:
                     else "HTTP 403: Jenkins asks who you are (JENKINS_USER and JENKINS_TOKEN)")
         if status == 404:
             return "HTTP 404: not there"
+        if status == 503:  # Jenkins' own page while it loads (hudson.util.HudsonIsLoading), which has no X-Jenkins
+            return "HTTP 503: Jenkins is starting or restarting, and answers once it is ready"
         if status >= 500:
             return f"HTTP {status}: Jenkins failed (its log says why)"
         return f"HTTP {status}"
 
     def _redirected(self, lead: str, answer: Answer) -> str:
         """A redirect in words: where it pointed (its scheme, host, port and path; never a user, a password or a query),
-        not followed."""
+        not followed. Its secrets are taken out before it is cut."""
         location = answer.header("location").strip()
         where = "another address"
         if location:
@@ -328,7 +399,8 @@ class Jenkins:
                 host = parts.hostname or ""
                 port = f":{parts.port}" if parts.port else ""
                 start = f"{parts.scheme}://{host}{port}" if host else self.target.base
-                where = "".join(c for c in start + (parts.path or "/") if ord(c) >= 32 and ord(c) != 127)[:160]
+                shown = "".join(c for c in start + (parts.path or "/") if ord(c) >= 32 and ord(c) != 127)
+                where = self.words(shown)[:160]
             except ValueError:
                 where = "an address that is none"
         return self.words(f"{lead}: Jenkins answered HTTP {answer.status}, sending it on to {where}: not followed "

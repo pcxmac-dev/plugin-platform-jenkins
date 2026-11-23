@@ -11,8 +11,9 @@ requires-python = ">=3.10"
 # the library it plugs into (the machine kind: liminal_libs.machines, plugin API 2.2: what it attaches to, its API
 # cards, since 1.49.0); 1.62.0's machines/endpoint.py sends its requests (nothing taken from the environment, no
 # redirect followed) and words a connection's trouble; 1.63.0 reads what it says of the interface it shares (READ_HOOKS,
-# the Internal API tab), which its tests hold it to
-dependencies = ["liminal-libs>=1.63.0"]
+# the Internal API tab), which its tests hold it to; 1.66.0 holds an ask to its PAGE_ONLY_HOOKS (apps/asking.py: its
+# build, asked from its page alone)
+dependencies = ["liminal-libs>=1.66.0"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]

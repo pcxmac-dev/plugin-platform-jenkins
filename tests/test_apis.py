@@ -61,6 +61,11 @@ def test_its_cards_are_sound_and_written_for_plugin_api_2_2():
     remote = card(cards.REMOTE)
     assert "API token" in remote.auth and "crumb" in remote.auth and remote.docs == cards._REMOTE
     assert {x.kind for x in remote.links} >= {"docs", "reference", "auth", "guide", "changelog", "source"}
+    # the remote access API's own words: the top page and the .../api/ pages carry X-Jenkins, not every answer (a
+    # refused token's 401 and the 503 of Jenkins starting carry none)
+    words = " ".join([remote.about, *(a.about for a in remote.areas)])
+    assert "every answer" not in words and "X-Jenkins header of its top page and of its .../api/ pages" in words
+    assert "unsigned first ask" in remote.auth and 'Basic realm="Jenkins"' in remote.auth
 
 
 def test_jenkins_card_names_every_request_the_plugin_sends_and_no_other():
@@ -107,7 +112,8 @@ def test_its_facts_say_what_it_learned_and_ask_nothing():
     facts = A.facts_of(p)
     assert len(j.asked) == before
     assert set(facts) == {cards.REMOTE, cards.SYSTEMD}
-    assert facts[cards.REMOTE]["Address"] == "http://127.0.0.1:8080" and facts[cards.REMOTE]["Requests"] == "3 made"
+    assert facts[cards.REMOTE]["Address"] == "http://127.0.0.1:8080"
+    assert facts[cards.REMOTE]["Requests"] == "4 made"  # the address's first ask, unsigned, then the three of a read
     assert facts[cards.SYSTEMD]["Installed"] == ("the systemd unit jenkins.service (running) · its war file "
                                                  "/usr/share/java/jenkins.war")
 

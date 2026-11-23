@@ -10,8 +10,11 @@
 - Any other system: nothing is looked for here; only Jenkins' address says whether it is there.
 
 `Finders` are the real looks, each a read that changes nothing (a test hands its own); `look` reads them into a
-`Found`. `install_rows` says how Jenkins is installed on each system, from Jenkins' own pages (read 2026-11-22: the
-jenkins.io installing guides and the Java support policy): this plugin installs, starts and stops nothing."""
+`Found`. What a look got is put in words apart from the look itself (`unit_state_of`: what `systemctl show` printed;
+`service_state_of`: the service's dwCurrentState), so the words are tested on what systemd and Windows answer.
+`install_rows` says how Jenkins is installed on each system, from Jenkins' own pages (read 2026-11-22: the jenkins.io
+installing guides and the Java support policy; the Windows installer's own source for where it keeps JENKINS_HOME):
+this plugin installs, starts and stops nothing."""
 from __future__ import annotations
 
 import ntpath
@@ -32,6 +35,8 @@ UNIT_FILES = ("/etc/systemd/system/jenkins.service", "/usr/lib/systemd/system/je
 STATES = {1: "stopped", 2: "starting", 3: "stopping", 4: "running", 5: "continuing", 6: "pausing", 7: "paused"}
 ACTIVE = {"active": "running", "inactive": "stopped", "failed": "failed", "activating": "starting",
           "deactivating": "stopping", "reloading": "reloading"}  # systemd's ActiveState, in words
+MASKED = "masked: it cannot be started"  # a unit systemd is told never to start (systemctl mask)
+RESTARTING = "restarting after a failure"  # activating, its SubState auto-restart: it failed, systemd starts it again
 SC_MANAGER_CONNECT, SERVICE_QUERY_STATUS = 0x0001, 0x0004
 ERROR_SERVICE_DOES_NOT_EXIST = 1060
 SYSTEMCTL_S = 5.0  # seconds `systemctl show` is given
@@ -158,12 +163,21 @@ def _service_state(name: str) -> tuple[str, str]:
             status = ServiceStatus()
             if not adv.QueryServiceStatus(service, ctypes.byref(status)):
                 return "not known", f"the service {name}'s state could not be read (error {ctypes.get_last_error()})"
-            state = int(status.dwCurrentState)
-            return STATES.get(state, f"in state {state}"), ""
+            return service_state_of(status.dwCurrentState), ""
         finally:
             adv.CloseServiceHandle(service)
     finally:
         adv.CloseServiceHandle(manager)
+
+
+def service_state_of(current) -> str:
+    """A Windows service's state in words, from its SERVICE_STATUS's dwCurrentState (SERVICE_STOPPED 1 to
+    SERVICE_PAUSED 7)."""
+    try:
+        state = int(current)
+    except (TypeError, ValueError):
+        return "not known"
+    return STATES.get(state, f"in state {state}")
 
 
 def _unit_state(name: str) -> tuple[str, str]:
@@ -177,17 +191,27 @@ def _unit_state(name: str) -> tuple[str, str]:
         return "", "systemctl is not here: this system does not run systemd"
     except (OSError, subprocess.SubprocessError) as e:
         return "", f"systemctl could not be asked ({type(e).__name__})"
-    if done.returncode != 0:
-        said = " ".join(str(done.stderr or done.stdout or "").split())[:200]
-        return "", f"systemctl could not say: {said or f'it ended with {done.returncode}'}"
-    props = dict(line.split("=", 1) for line in str(done.stdout or "").splitlines() if "=" in line)
+    return unit_state_of(done.returncode, done.stdout, done.stderr)
+
+
+def unit_state_of(code, out, err) -> tuple[str, str]:
+    """(a systemd unit's state in words, "" when systemd has no such unit; why systemctl could not say, "" when it
+    could), from what `systemctl show -p LoadState -p ActiveState -p SubState` ended with and printed: masked (systemd
+    is told never to start it), restarting after a failure (activating, its SubState auto-restart), else its
+    ActiveState in words with its SubState when that says more."""
+    if code != 0:
+        said = " ".join(str(err or out or "").split())[:200]
+        return "", f"systemctl could not say: {said or f'it ended with {code}'}"
+    props = dict(line.split("=", 1) for line in str(out or "").splitlines() if "=" in line)
     load, active, sub = (props.get(k, "").strip() for k in ("LoadState", "ActiveState", "SubState"))
     if load in ("", "not-found"):
         return "", ""
     if load == "masked":
-        return "masked: it cannot be started", ""
+        return MASKED, ""
+    if active == "activating" and sub.startswith("auto-restart"):
+        return RESTARTING, ""
     words = ACTIVE.get(active, active or "not known")
-    return (f"{words} ({sub})" if sub and sub not in ("running", "dead", active) else words), ""
+    return (f"{words} ({sub})" if sub and sub not in ("running", "dead", "start", "stop", active) else words), ""
 
 
 # -- how Jenkins is installed: its own steps, said, never done -------------------------------------------------------
@@ -195,6 +219,10 @@ JAVA = ("Java 21 or 25 (today's Jenkins runs on no older Java: the last releases
         "the weekly 2.544)")
 TOKEN_STEP = ("Sign in here", "make an API token (your name, top right › Security › API Token › Add new Token), then "
                               "set JENKINS_USER and JENKINS_TOKEN in this plugin's Settings")
+# a war file run by hand: Jenkins' builds on its built-in node inherit the environment it was started in, so one started
+# where the plugin's settings are environment variables (the platform's login keeps them so today) hands the token on
+WAR_ALONE = ("in a shell where JENKINS_USER and JENKINS_TOKEN are not set (the builds on its built-in node inherit the "
+             "environment it starts in, the token too)")
 
 
 def install_rows(system: str) -> list[list[str]]:
@@ -205,8 +233,10 @@ def install_rows(system: str) -> list[list[str]]:
             ["Jenkins", "the Windows installer of the LTS line, from https://www.jenkins.io/download/: it installs "
                         "Jenkins as a Windows service listening at port 8080, in C:\\Program Files\\Jenkins unless you "
                         "choose another folder"],
-            ["Unlock it", "open http://localhost:8080 and type the password in C:\\Program Files\\Jenkins\\secrets\\"
-                          "initialAdminPassword, then make your user"],
+            ["Unlock it", "open http://localhost:8080 and type the password from the file the Unlock Jenkins page "
+                          "names, JENKINS_HOME\\secrets\\initialAdminPassword (JENKINS_HOME: C:\\ProgramData\\Jenkins\\"
+                          ".jenkins for a service run as LocalSystem, the service user's %LocalAppData%\\Jenkins\\"
+                          ".jenkins otherwise; the password is in jenkins.err.log too), then make your user"],
             list(TOKEN_STEP),
             ["Its guide", "https://www.jenkins.io/doc/book/installing/windows/"],
         ]
@@ -234,6 +264,6 @@ def install_rows(system: str) -> list[list[str]]:
     return [
         ["Java", JAVA],
         ["Jenkins", "https://www.jenkins.io/download/ lists its packages for every system (some are third parties'), "
-                    "and its war file, run with java -jar jenkins.war --httpPort=8080"],
+                    f"and its war file, run with java -jar jenkins.war --httpPort=8080 {WAR_ALONE}"],
         list(TOKEN_STEP),
     ]

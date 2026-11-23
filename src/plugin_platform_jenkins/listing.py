@@ -10,10 +10,11 @@ from datetime import datetime, timezone
 
 ROWS = 200  # a list's rows asked of Jenkins at most, and shown
 WORDS = 240  # characters kept of a text Jenkins writes (why a build waits, why a node is offline)
+FIRST_TREE = "quietingDown"  # an address's first ask, unsigned: as little as there is (its X-Jenkins is the news)
 JOBS_TREE = ("jobs[name,color,buildable,inQueue,lastBuild[number,result,timestamp,duration,building],"
              f"property[parameterDefinitions[name,type]]]{{0,{ROWS}}},quietingDown")
 JOB_TREE = "name,color,buildable,inQueue,property[parameterDefinitions[name,type]]"
-QUEUE_TREE = f"items[id,why,inQueueSince,blocked,buildable,stuck,task[name]]{{0,{ROWS}}}"
+QUEUE_TREE = f"items[id,why,inQueueSince,blocked,buildable,stuck,task[name,fullName]]{{0,{ROWS}}}"
 NODES_TREE = ("busyExecutors,totalExecutors,computer[displayName,offline,temporarilyOffline,offlineCauseReason,"
               f"numExecutors,assignedLabels[name],executors[idle]]{{0,{ROWS}}}")
 # a job's colour (hudson.model.BallColor, as the API names it); "_anime" after it: a build of it runs now
@@ -52,8 +53,10 @@ def _count(value) -> int | None:
 @dataclass(frozen=True)
 class Job:
     """A job as listed: its name, kind, colour (its BallColor without _anime: "" for a folder), whether a build of it
-    runs now, can be asked, waits in the queue; its last build's number, result, start and length (milliseconds); and
-    its parameters, (name, type) each."""
+    runs now, can be asked, waits in the queue; its last build's number, result, start and length (milliseconds); its
+    parameters, (name, type) each; and whether it is a folder Jenkins computes (`computed`: a multibranch project or an
+    organization folder, which Jenkins says is buildable and gives no colour, since a POST of its build asks for a scan
+    of its branches or repositories and builds nothing itself)."""
 
     name: str
     kind: str = ""
@@ -67,6 +70,7 @@ class Job:
     took: int | None = None
     building: bool = False
     parameters: tuple[tuple[str, str], ...] = ()
+    computed: bool = False
 
     @property
     def state(self) -> str:
@@ -94,18 +98,20 @@ def parameters_of(row: Mapping) -> tuple[tuple[str, str], ...]:
 
 
 def job_of(row) -> Job | None:
-    """One job of a listing (None: no job's, a row without a name)."""
+    """One job of a listing (None: no job's, a row without a name). Buildable only as a job is: Jenkins says it is, and
+    it has a colour (Job.getIconColor, exported as `color` for every job and for no folder, computed or plain)."""
     if not isinstance(row, Mapping) or not isinstance(row.get("name"), str) or not row["name"].strip():
         return None
     colour = str(row.get("color") or "") if isinstance(row.get("color"), str) else ""
     running = colour.endswith("_anime")
     last = row.get("lastBuild") if isinstance(row.get("lastBuild"), Mapping) else {}
+    said = row.get("buildable") is True
     return Job(name=row["name"].strip(), kind=KINDS.get(str(row.get("_class") or ""), ""),
                colour=colour[:-len("_anime")] if running else colour, running=running,
-               buildable=row.get("buildable") is True, queued=row.get("inQueue") is True,
+               buildable=said and bool(colour), queued=row.get("inQueue") is True,
                number=_count(last.get("number")), result=str(last.get("result") or ""),
                started=_count(last.get("timestamp")), took=_count(last.get("duration")),
-               building=last.get("building") is True, parameters=parameters_of(row))
+               building=last.get("building") is True, parameters=parameters_of(row), computed=said and not colour)
 
 
 def jobs_of(data) -> tuple[Job, ...] | None:
@@ -118,8 +124,9 @@ def jobs_of(data) -> tuple[Job, ...] | None:
 
 @dataclass(frozen=True)
 class Waiting:
-    """A build waiting in the queue: its item's id, its job, why it waits (Jenkins' words), since when (milliseconds),
-    and its kind of wait in words."""
+    """A build waiting in the queue: its item's id, its job (by its full name, folder/job, where that is not its name
+    alone: two multibranch projects' main told apart), why it waits (Jenkins' words), since when (milliseconds), and its
+    kind of wait in words."""
 
     id: int | None
     job: str
@@ -144,8 +151,9 @@ def queue_of(data) -> tuple[Waiting, ...] | None:
         else:
             state = WAITING.get(kind) or ("blocked" if row.get("blocked") is True
                                           else "waiting for an executor" if row.get("buildable") is True else "waiting")
-        out.append(Waiting(_count(row.get("id")), _text(task.get("name"), 200) or "(a task)", _text(row.get("why")),
-                           _count(row.get("inQueueSince")), state))
+        name, full = _text(task.get("name"), 200), _text(task.get("fullName"), 200)
+        out.append(Waiting(_count(row.get("id")), (full if full and full != name else name) or "(a task)",
+                           _text(row.get("why")), _count(row.get("inQueueSince")), state))
     return tuple(out)
 
 

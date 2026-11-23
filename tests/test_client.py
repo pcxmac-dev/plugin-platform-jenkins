@@ -1,15 +1,18 @@
 """Jenkins' client and the settings it is made from: the address as typed, the token sent only where it may be (https,
-or this machine) and never in a word said, every request under the address with nothing followed off it, an answer
-read under its bounds, the crumb and its session cookie, a job's path quoted. Jenkins is a stand-in (stand_ins.py)."""
+or this machine) and never in a word said, every request under the address with nothing followed off it (a redirect
+the answer only where its asker takes it), an answer read under its bounds, the crumb and its session cookie, a job's
+path quoted. Jenkins is a stand-in (stand_ins.py)."""
 from __future__ import annotations
 
 import base64
+import json
 
 import pytest
 
 from liminal_libs.apps import EnvironmentLogin
 from plugin_platform_jenkins import client, settings
-from plugin_platform_jenkins.client import MOST, Jenkins, JenkinsError, job_path, queued
+from plugin_platform_jenkins.client import (MOST, Answer, Jenkins, JenkinsError, challenged, job_path, landing, queued,
+                                            same_page)
 from stand_ins import BASE, COOKIE, CRUMB, SESSION, TOKEN, USER, Clock, FakeJenkins, basic, reply
 
 
@@ -64,6 +67,18 @@ def test_the_settings_are_read_through_the_login_alone():
     assert t.base == BASE and t.user == "" and "could not be read from the login (RuntimeError)" in t.problems[0]
 
 
+def test_jenkins_clis_names_are_read_after_the_plugins_own():
+    """jenkins-cli.jar's own JENKINS_USER_ID and JENKINS_API_TOKEN are read too, the plugin's names first."""
+    keys = {k.name: k for k in settings.KEYS}
+    assert keys["JENKINS_USER"].aliases == ("JENKINS_USER_ID",)
+    assert keys["JENKINS_TOKEN"].aliases == ("JENKINS_API_TOKEN",) and keys["JENKINS_URL"].aliases == ()
+    t = settings.read(EnvironmentLogin(env={"JENKINS_USER_ID": "bob", "JENKINS_API_TOKEN": "b" * 34}))
+    assert (t.user, t.token, t.sends) == ("bob", "b" * 34, True)
+    t = settings.read(EnvironmentLogin(env={"JENKINS_USER": USER, "JENKINS_TOKEN": TOKEN, "JENKINS_USER_ID": "bob",
+                                            "JENKINS_API_TOKEN": "b" * 34}))
+    assert (t.user, t.token) == (USER, TOKEN)
+
+
 def test_the_token_goes_over_https_or_to_this_machine_only():
     assert target().sends and target("http://localhost:8080").sends and target("http://[::1]:8080").sends
     assert target("https://ci.example.com").sends
@@ -104,6 +119,56 @@ def test_a_redirect_is_never_followed():
     assert len(fake.asked) == 1 and all(u.startswith(BASE + "/") for _, u, _, _ in fake.asked)
 
 
+def test_a_redirect_is_the_answer_only_where_its_asker_takes_it():
+    """A build's 303 to the queue item it joined, its 302 back to the job's own page: the answer when its status is
+    among `ok` and `lands` takes where it points; never followed, and any other still refused in words."""
+    def answers(status, location):
+        def transport(method, url, headers, body, timeout, stream):
+            transport.asked.append(url)
+            return reply(status, {"Location": location})
+        transport.asked = []
+        return transport
+
+    def back(status, where):
+        return same_page(where, BASE + "/job/app")
+
+    t = answers(303, "/queue/item/7/")
+    got = Jenkins(target(), transport=t).ask("POST", "/job/app/buildWithParameters", ok=(201, 303))
+    assert got.status == 303 and queued(got) == 7 and t.asked == [BASE + "/job/app/buildWithParameters"]
+    for location in (".", "/job/app/.", BASE + "/job/app/", BASE + "/job/app/."):  # Jenkins' "." however it is said
+        assert Jenkins(target(), transport=answers(302, location)).ask("POST", "/job/app/build", ok=(201, 302),
+                                                                        lands=back).status == 302
+    with pytest.raises(JenkinsError, match="sending it on to https://sso.example.com/login: not followed"):
+        Jenkins(target(), transport=answers(302, "https://sso.example.com/login")).ask(
+            "POST", "/job/app/build", ok=(201, 302), lands=back)
+    with pytest.raises(JenkinsError, match="not followed"):
+        Jenkins(target(), transport=answers(303, "/queue/item/7/")).ask("POST", "/job/app/build")  # not among ok
+    asked = BASE + "/jenkins/job/my%20job/build"
+    assert landing(asked, Answer(302, {"location": "."})) == BASE + "/jenkins/job/my%20job/"
+    assert landing(asked, Answer(302, {"location": "../../../x"})) == BASE + "/x"
+    assert landing(asked, Answer(302, {})) == "" and landing(asked, Answer(302, {"location": "http://x:99999/"})) == ""
+    assert same_page(BASE + "/jenkins/job/my%20job/", BASE + "/jenkins/job/my job")
+    assert not same_page("", BASE + "/job/app") and not same_page(BASE + "/job/app/x", BASE + "/job/app")
+
+
+def test_the_secrets_are_taken_out_before_any_word_is_cut():
+    """An answer that echoes the token where its words are cut (a long Location's path, a Content-Encoding header)
+    leaves no piece of it in what is said."""
+    long = "https://sso.example.com/" + "a" * 120 + TOKEN
+    with pytest.raises(JenkinsError) as e:
+        Jenkins(target(), transport=FakeJenkins(redirect=long)).get("/api/json")
+    said = str(e.value)
+    assert TOKEN[:16] not in said and "a" * 120 + "•••" in said
+    for echoed in (TOKEN, basic(USER, TOKEN)[6:]):
+        def packed(method, url, headers, body, timeout, stream, echoed=echoed):
+            return reply(200, {"X-Jenkins": "2.591", "Content-Encoding": echoed}, b"{}")
+
+        with pytest.raises(JenkinsError) as e:
+            Jenkins(target(), transport=packed).get("/api/json")
+        said = str(e.value)
+        assert echoed[:20].lower() not in said.lower() and "•••-encoded" in said, said
+
+
 def test_no_answer_is_said_in_words_without_the_token():
     j = Jenkins(target(), transport=FakeJenkins(down=True))
     with pytest.raises(JenkinsError) as e:
@@ -135,6 +200,44 @@ def test_refusals_are_said_by_their_status():
     with pytest.raises(JenkinsError) as e:
         j.get("/queue/api/json")
     assert "HTTP 500: Jenkins failed" in str(e.value) and "Oops" not in str(e.value)  # its HTML page never shown
+    j = Jenkins(target(), transport=FakeJenkins(starting=True))  # its loading page, while it starts or restarts
+    with pytest.raises(JenkinsError) as e:
+        j.get("/api/json")
+    said = str(e.value)
+    assert e.value.status == 503 and e.value.version == "" and "failed" not in said
+    assert said == "GET /api/json: HTTP 503: Jenkins is starting or restarting, and answers once it is ready"
+
+
+def test_jenkins_own_refusal_of_a_token_is_known_by_its_challenge():
+    """A refused token: 401 with WWW-Authenticate: Basic realm="Jenkins", and no X-Jenkins on it."""
+    def answer(status, challenge):
+        return Answer(status, {"www-authenticate": challenge} if challenge is not None else {})
+
+    assert challenged(answer(401, 'Basic realm="Jenkins"')) and challenged(answer(401, ' basic Realm = "Jenkins" '))
+    for status, challenge in ((401, 'Basic realm="Restricted"'), (401, 'Basic realm="Jenkins"\nX: y'), (401, None),
+                              (403, 'Basic realm="Jenkins"'), (401, 'Negotiate')):
+        assert not challenged(answer(status, challenge)), (status, challenge)
+    j = Jenkins(target(token="0" * 34), transport=FakeJenkins())
+    got = j.get("/api/json", ok=(200, 401, 403))
+    assert got.status == 401 and challenged(got) and j.version == "" and j.unmarked == 1
+
+
+def test_what_answers_without_x_jenkins_is_counted():
+    """The GETs that no answer with X-Jenkins came to: one without it, or none at all; a POST's answer is never
+    counted (Jenkins marks none)."""
+    j = Jenkins(target(), transport=FakeJenkins(jenkins=False, anonymous=True))
+    j.get("/api/json")
+    assert (j.unmarked, j.version) == (1, "")
+    j = Jenkins(target(), transport=FakeJenkins())
+    j.get("/api/json")
+    assert (j.unmarked, j.version) == (0, "2.580.2")
+    j = Jenkins(target(), transport=FakeJenkins(down=True))
+    with pytest.raises(JenkinsError):
+        j.get("/api/json")
+    assert j.unmarked == 1
+    j = Jenkins(target(), transport=FakeJenkins())
+    done, _ = j.post("/job/app/build")
+    assert done.status == 201 and "x-jenkins" not in done.headers and j.unmarked == 0
 
 
 def test_an_answer_is_read_under_its_bounds():
@@ -208,6 +311,18 @@ def test_a_crumb_not_as_jenkins_gives_one_is_refused():
     def odd(method, url, headers, body, timeout, stream):
         return reply(200, {"X-Jenkins": "2.591", "Content-Type": "application/json"},
                      b'{"crumb": "bad crumb\\n", "crumbRequestField": "Jenkins Crumb"}')
+
+    with pytest.raises(JenkinsError, match="holds no crumb"):
+        Jenkins(target(), transport=odd).crumb()
+
+
+@pytest.mark.parametrize("field, crumb", [("Jenkins-Crumb\n", CRUMB), ("Jenkins-Crumb", CRUMB + "\n")])
+def test_a_crumb_with_a_line_break_after_it_is_refused(field, crumb):
+    """A field or a crumb with a line break after it matches no pattern whole: refused in words, before a POST is
+    made with it (which the transport would refuse, sounding like a write that may have been done)."""
+    def odd(method, url, headers, body, timeout, stream):
+        return reply(200, {"X-Jenkins": "2.591", "Content-Type": "application/json"},
+                     json.dumps({"crumb": crumb, "crumbRequestField": field}).encode())
 
     with pytest.raises(JenkinsError, match="holds no crumb"):
         Jenkins(target(), transport=odd).crumb()

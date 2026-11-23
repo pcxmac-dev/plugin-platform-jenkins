@@ -45,13 +45,19 @@ def jobs() -> list[dict]:
         {"_class": "hudson.model.FreeStyleProject", "name": "old", "color": "disabled", "buildable": False,
          "inQueue": False, "lastBuild": None, "property": []},
         {"_class": "com.cloudbees.hudson.plugins.folder.Folder", "name": "team"},
+        # a Multibranch Pipeline as ComputedFolder exports it: buildable, no colour, no last build (its POST /build
+        # schedules a scan of its branches, then answers 302 to its own page)
+        {"_class": "org.jenkinsci.plugins.workflow.multibranch.WorkflowMultiBranchProject", "name": "shop",
+         "buildable": True},
     ]
 
 
 QUEUE = {"_class": "hudson.model.Queue", "items": [
     {"_class": "hudson.model.Queue$BuildableItem", "id": 12, "why": "Waiting for next available executor",
      "inQueueSince": T - 60_000, "blocked": False, "buildable": True, "stuck": False,
-     "task": {"_class": "org.jenkinsci.plugins.workflow.job.WorkflowJob", "name": "deploy"}}]}
+     "task": {"_class": "org.jenkinsci.plugins.workflow.job.WorkflowJob", "name": "deploy", "fullName": "deploy"}}]}
+LOADING = (b"<!DOCTYPE html><html><head><title>Starting Jenkins</title></head><body><h1>Please wait while Jenkins is "
+           b"getting ready to work...</h1></body></html>")  # hudson.util.HudsonIsLoading's page: 503, no X-Jenkins
 NODES = {"_class": "hudson.model.ComputerSet", "busyExecutors": 1, "totalExecutors": 2, "computer": [
     {"_class": "hudson.model.Hudson$MasterComputer", "displayName": "Built-In Node", "offline": False,
      "temporarilyOffline": False, "offlineCauseReason": "", "numExecutors": 2,
@@ -67,21 +73,33 @@ def reply(status: int, headers: dict | None = None, body: bytes = b"") -> Reply:
 
 
 class FakeJenkins:
-    """Jenkins as a stand-in transport (the library's requests_transport's shape): its version in X-Jenkins on every
-    answer (none with `jenkins` False: something else answering), who it lets in (`user` with `token`; anyone with
+    """Jenkins as a stand-in transport (the library's requests_transport's shape): its version in X-Jenkins on its
+    answers (none with `jenkins` False: something else answering), who it lets in (`user` with `token`; anyone with
     `anonymous`), its CSRF protection (`csrf`: a crumb issued, and required of every POST with its session cookie), no
-    answer at all (`down`), a redirect for everything (`redirect`: its Location), and every request as sent."""
+    answer at all (`down`), its loading page while it starts (`starting`: 503 to everything, without X-Jenkins), a
+    redirect for everything (`redirect`: its Location), the builds a queue decision of one of its plugins refuses
+    (`vetoed`: job names, answered 302 back to the job's own page, as Jenkins' "." is), and every request as sent.
+
+    As Jenkins does: a token it refuses gets 401 with WWW-Authenticate: Basic realm="Jenkins" and no X-Jenkins
+    (BasicHeaderProcessor, through Spring's BasicAuthenticationEntryPoint); a request without one, where anonymous reads
+    are not let in, 403 with X-Jenkins (HudsonAuthenticationEntryPoint); a build asked again while the same one waits
+    in the queue (`waiting`), 303 to its queue item from /buildWithParameters and 201 to it from /build; a multibranch
+    project's POST /build a scan (`scans`), then 302 to its own page."""
 
     def __init__(self, version="2.580.2", user=USER, token=TOKEN, anonymous=False, csrf=True, down=False,
-                 redirect=None, jenkins=True, listed=None, queue=None, nodes=None, fail=None):
+                 redirect=None, jenkins=True, listed=None, queue=None, nodes=None, fail=None, starting=False,
+                 vetoed=()):
         self.version, self.user, self.token = version, user, token
         self.anonymous, self.csrf, self.down, self.redirect, self.jenkins = anonymous, csrf, down, redirect, jenkins
+        self.starting, self.vetoed = starting, set(vetoed)
         self.listed = jobs() if listed is None else listed
         self.queue = QUEUE if queue is None else queue
         self.nodes = NODES if nodes is None else nodes
         self.fail = dict(fail or {})  # a path -> the status it answers (a failing part)
         self.asked: list[tuple[str, str, dict, bytes | None]] = []
         self.built: list[tuple[str, list]] = []  # (the job's path, its form's pairs), as Jenkins queued them
+        self.waiting: dict[tuple, int] = {}  # (the job's path, its form's pairs) -> the queue item it waits as
+        self.scans: list[str] = []  # the computed folders a POST /build had scanned
 
     def paths(self) -> list[tuple[str, str]]:
         return [(m, urlsplit(u).path) for m, u, _, _ in self.asked]
@@ -90,6 +108,9 @@ class FakeJenkins:
         self.asked.append((method, url, dict(headers), body))
         if self.down:
             raise ConnectionRefusedError(10061, "No connection could be made: the target machine actively refused it")
+        if self.starting:
+            return reply(503, {"Content-Type": "text/html;charset=UTF-8", "Cache-Control": "no-cache,no-store"},
+                         LOADING)
         h = {"X-Jenkins": self.version, "X-Hudson": "1.395"} if self.jenkins else {"Server": "something-else"}
         if self.redirect:
             return reply(302, {**h, "Location": self.redirect})
@@ -99,7 +120,9 @@ class FakeJenkins:
             return reply(self.fail[path], {**h, "Content-Type": "text/html"}, b"<html><body>Oops</body></html>")
         auth = headers.get("Authorization")
         if auth is not None and auth != basic(self.user, self.token):
-            return reply(401, {**h, "Content-Type": "text/html"}, b"<html>Invalid password/token for user</html>")
+            challenge = {"WWW-Authenticate": 'Basic realm="Jenkins"'} if self.jenkins else {**h}
+            return reply(401, {**challenge, "Content-Type": "text/html;charset=iso-8859-1"},
+                         b"<html><body><h2>HTTP ERROR 401 Unauthorized</h2></body></html>")
         if auth is None and not self.anonymous:
             return reply(403, {**h, "Content-Type": "text/html"}, b"<html>Authentication required</html>")
         js = {**h, "Content-Type": "application/json;charset=utf-8"}
@@ -127,10 +150,23 @@ class FakeJenkins:
                 return reply(403, {**h, "Content-Type": "text/html"},
                              b"<html>Error 403 No valid crumb was included in the request</html>")
             for end in ("/buildWithParameters", "/build"):
-                if path.endswith(end) and self._job(path[:-len(end)]) is not None:
-                    form = parse_qs((body or b"").decode(), keep_blank_values=True)
-                    self.built.append((path, sorted((k, v[0]) for k, v in form.items())))
-                    return reply(201, {**h, "Location": f"{BASE}/queue/item/{100 + len(self.built)}/"})
+                job = self._job(path[:-len(end)]) if path.endswith(end) else None
+                if job is None:
+                    continue
+                page = f"{BASE}{path[:-len(end)]}/"  # Jenkins' "." after the POST: the job's own page
+                if not job.get("color"):  # a computed folder: ComputedFolder.doBuild schedules a scan
+                    self.scans.append(job["name"])
+                    return reply(302, {"Location": page})
+                if job["name"] in self.vetoed:  # Queue.schedule2 refused: no item, sendRedirect(".")
+                    return reply(302, {"Location": page})
+                form = parse_qs((body or b"").decode(), keep_blank_values=True)
+                key = (path, tuple(sorted((k, v[0]) for k, v in form.items())))
+                if key in self.waiting:  # the same build waits: folded into it (ScheduleResult not created)
+                    item = f"/queue/item/{self.waiting[key]}/"
+                    return reply(303 if end == "/buildWithParameters" else 201, {"Location": item})
+                self.built.append((path, list(key[1])))
+                self.waiting[key] = 100 + len(self.built)
+                return reply(201, {"Location": f"/queue/item/{100 + len(self.built)}/"})
         return reply(404, {**h, "Content-Type": "text/html"}, b"<html>Not Found</html>")
 
     def _job(self, path: str) -> dict | None:
