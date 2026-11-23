@@ -145,7 +145,7 @@ class JenkinsPlugin(MachinePlugin):
     # what it attaches to (plugin API 2.2): Jenkins' remote access API, and Windows' service control manager or
     # systemd's systemctl for its install (apis.py: each one's pages, parts and calls)
     apis = cards.APIS
-    order = 810
+    order = 770  # the Continuous Integration plugins in the user's naming: Jenkins 770, GoCD 771, Buildbot 772
     ICON = "jenkins"  # Jenkins' mark, once the library's icons.js draws it (the plug until then)
     SECTION = "ci"  # drawn under the platform's Continuous Integration plugins (Machine's until a platform draws it)
     HOOKS = (*MachinePlugin.HOOKS, "refresh", "build")

@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.1.0 (2026-11-22)
+## 0.1.0 (2026-11-23)
 
 The first release: Jenkins for the platform, the first plugin of its Continuous Integration section (the user,
 2026-11-22: a "Continuous Integration" class of plugins, with Jenkins, GoCD and Buildbot). Needs liminal-libs>=1.66.0
