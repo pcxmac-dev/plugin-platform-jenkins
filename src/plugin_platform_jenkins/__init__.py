@@ -9,6 +9,14 @@ what is shown). A job's build is asked from the platform's page alone (PAGE_ONLY
 there, with Jenkins' crumb when its CSRF protection issues one. When Jenkins is not here, the page says how to install
 it, from Jenkins' own pages: this release installs, starts and stops nothing.
 
+0.2.0 (Monday list item 34; service-containers-design §5.2, the user's answers of 2026-11-25: "Containers only"): built
+on the library's ContainedService. Jenkins is installed, started, stopped, updated and removed only as a container,
+through the container plugin you pick (Docker first), in that plugin's plans you approve on the page; its recipe
+(recipe.py) is Jenkins' controller and, once you set its node's secret, an inbound agent container beside it, each image
+pinned by digest, its usage statistics off. Jenkins' setup wizard makes your admin: Unlock… shows the password that
+opens it, once. A Jenkins you installed yourself is still found and read as before; how to install one natively is
+said in a line, not done. Its port is 8080, on your network only as Install… or Expose… says (each plan asks again).
+
 Its settings (settings.py) are read through the plugin's login alone: JENKINS_URL (http://127.0.0.1:8080 unless set),
 JENKINS_USER and JENKINS_TOKEN (an API token). The plugin sends the token to JENKINS_URL and nowhere else, over https or
 to this machine, and there only once an unsigned first ask was answered as Jenkins answers it (its X-Jenkins header),
@@ -29,15 +37,18 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from urllib.parse import parse_qsl, urlsplit
 
-from liminal_libs.machines.plugin import MachinePlugin
+from liminal_libs.apps import asking
+from liminal_libs.instances import Refusal
+from liminal_libs.machines import containers as C
+from liminal_libs.machines.containedservice import ContainedService, Pace
 
 from . import apis as cards
-from . import here, listing, settings
+from . import here, listing, recipe, settings
 from .client import (OK, QUEUED, Answer, Jenkins, JenkinsError, Target, challenged, job_path, queued, same_page,
                      version_of)
 from .listing import ROWS, ago, clock, took
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 READ_S = 30.0  # what was read is kept this long: the platform's page asks every few seconds
 READ_WAIT_S = 60.0  # an ask waits this long for another's read under way: more than a read takes at its GETs' bounds
 PARAMETERS_MOST = 50  # parameters of one build at most
@@ -133,8 +144,9 @@ def parameters_of(text) -> list[tuple[str, str]]:
     return pairs
 
 
-class JenkinsPlugin(MachinePlugin):
-    """Jenkins for the platform: present when it is installed here or answers at its address, valid while it answers."""
+class JenkinsPlugin(ContainedService):
+    """Jenkins for the platform: present when it is installed here, placed in a container, or answers at its address;
+    valid while it can be placed (0.2.0: its not answering is said, never invalid)."""
 
     name = "jenkins"
     title = "Jenkins"
@@ -148,11 +160,12 @@ class JenkinsPlugin(MachinePlugin):
     order = 770  # the Continuous Integration plugins in the user's naming: Jenkins 770, GoCD 771, Buildbot 772
     ICON = "jenkins"  # Jenkins' mark, once the library's icons.js draws it (the plug until then)
     SECTION = "ci"  # drawn under the platform's Continuous Integration plugins (Machine's until a platform draws it)
-    HOOKS = (*MachinePlugin.HOOKS, "refresh", "build")
+    HOOKS = (*ContainedService.HOOKS, "refresh", "build", "unlock")
+    SYSTEMS = ("linux", "windows")  # its recipe's images (recipe.PINS)
     READ_HOOKS = ("refresh",)  # what it says of the interface it shares (the Internal API tab, liminal-libs 1.63.0)
     # a build runs whatever its job says, as JENKINS_USER: asked from the platform's page alone, where you confirm it,
     # never by another plugin (liminal-libs 1.66.0's apps/asking.py; the command line calls it itself)
-    PAGE_ONLY_HOOKS = ("build",)
+    PAGE_ONLY_HOOKS = ("build", "unlock")  # with the base's five service changes (they add up)
     INTERNAL_NOTES = (
         "A build is asked from its page alone (PAGE_ONLY_HOOKS), once you confirmed it there: another plugin's ask of "
         "it is refused, since a job runs whatever it says as JENKINS_USER.",
@@ -160,10 +173,14 @@ class JenkinsPlugin(MachinePlugin):
         "was answered as Jenkins answers (X-Jenkins); no answer, table or log holds it.",
         "Jenkins is read at most once every 30 s (Read again, a build and new settings read anew): three GETs of its "
         "JSON API, after one unsigned GET at an address not yet answered as Jenkins; 200 rows of a list at most.",
+        "Its container is asked of a container plugin's plans alone (hosting, service_plan, apply_plan, service_work): "
+        "Install…, every change and Unlock… are its page's alone; the unlock password is shown once and kept nowhere.",
     )
     keys = settings.KEYS  # its settings, kept through the platform's login
 
-    def __init__(self, finders=None, transport=None, clock=None, wall=None):
+    def __init__(self, finders=None, transport=None, clock=None, wall=None, pace: Pace | None = None, pins=None):
+        ContainedService.__init__(self, pace)
+        self._pins = pins  # recipe.PINS unless a test's
         self._finders = finders  # here.Finders: what is installed here (a test's stand-in); the real ones unless given
         self._transport = transport  # (method, url, headers, body, timeout, stream) -> endpoint.Reply: a test's
         self._clock = clock or time.monotonic
@@ -181,6 +198,10 @@ class JenkinsPlugin(MachinePlugin):
             s["failed"] += 1 if error else 0
             s["status"], s["at"], s["seconds"], s["error"] = status, self._wall(), seconds, error
 
+    def _settings(self):
+        """Its settings, through its login: JENKINS_URL when set, else its container's port at its here."""
+        return settings.read(self.login, self.address())
+
     def _found(self) -> here.Found:
         try:
             return here.look(self._finders)
@@ -196,7 +217,7 @@ class JenkinsPlugin(MachinePlugin):
                 kept = self._rt.reading
             if kept is not None and not fresh:
                 return kept
-            target = settings.read(self.login)
+            target = self._settings()
             return self._reading(target, self._found(), None, busy=True,
                                  why=(f"another ask of Jenkins at {target.base or settings.URL} has waited more than "
                                       f"{READ_WAIT_S:g} s for its answer: what answers there answers too slowly"))
@@ -205,7 +226,7 @@ class JenkinsPlugin(MachinePlugin):
                 kept = self._rt.reading
             if kept is not None and not fresh and self._clock() - kept.at < READ_S:
                 return kept
-            reading = self._look(settings.read(self.login), self._found())
+            reading = self._look(self._settings(), self._found())
             with self._rt.lock:
                 self._rt.reading = reading
             return reading
@@ -335,7 +356,7 @@ class JenkinsPlugin(MachinePlugin):
             r = self._read()
         except Exception:  # noqa: BLE001 - one that cannot say is not there
             return False
-        return r.found.installed or r.answered
+        return r.found.installed or r.answered or self.service_present()
 
     def status(self) -> dict:
         """What Jenkins is here and how it does, for the platform's page: installed here or not, its service's state,
@@ -376,7 +397,7 @@ class JenkinsPlugin(MachinePlugin):
         path = job_path(job)
         name = str(job).strip().strip("/")
         given = parameters_of(parameters)
-        target = settings.read(self.login)
+        target = self._settings()
         if not target.base:
             raise ValueError(target.problems[0])
         if target.withheld:
@@ -451,6 +472,63 @@ class JenkinsPlugin(MachinePlugin):
                              ok=(*OK, 302, 303), lands=lands)
         return done, crumb, known
 
+    # -- its container (ContainedService) ----------------------------------------------------------------------------
+    def spec_for(self, system, name, options):
+        """Jenkins' recipe for that system (recipe.py): its controller, and its agent once its secret is set."""
+        agent = bool(self._agent_secret())
+        return recipe.spec(system, name, options, agent, self._pins)
+
+    def _agent_secret(self) -> str:
+        try:
+            got = (self.login.variables([settings.AGENT_SECRET]) or {}) if self.login is not None else {}
+        except Exception:  # noqa: BLE001 - a login that cannot be asked: none set
+            return ""
+        return str(got.get(settings.AGENT_SECRET) or "")
+
+    def ready(self, hosted):
+        """Whether Jenkins answers at its container's port: an unsigned GET of /api/json answered with X-Jenkins (its
+        setup wizard answers 403 so, before you signed in)."""
+        base = self.address(hosted)
+        if not base:
+            return False, "no port of its is published"
+        target = settings.parse({settings.URL: base})
+        if not target.base:
+            return False, target.problems[0]
+        try:
+            p = self._client(target, anonymous=True)
+            p.get("/api/json", tree=listing.FIRST_TREE, ok=(200, 401, 403))
+        except JenkinsError as e:
+            return False, str(e)
+        return (True, "") if p.version else (False, f"what answers at {base} is not Jenkins (no X-Jenkins header)")
+
+    def after(self, action, hosted, line):
+        """After its install: where to finish its setup."""
+        self._forget()
+        if action == "install":
+            return [f"Jenkins runs: open {self.address(hosted) or recipe.WEB_PORT} to finish its setup (Unlock… shows "
+                    "the password)"]
+        return []
+
+    def unlock(self, name="ci") -> dict:
+        """The password that unlocks Jenkins' setup wizard, read from its container's home and shown once, from its
+        page alone: never kept, logged or said again (Jenkins deletes the file when its setup ends)."""
+        if asking.asker() != asking.PAGE:
+            raise Refusal(f"jenkins's unlock is yours, from its page alone: {asking.asker() or 'no one'} asked it")
+        sid = self._sid(name)
+        placed = self.placement(sid.split("/", 1)[1])
+        if not placed or placed.get("state") != "installed":
+            raise Refusal(f"{sid} is not installed in a container: Install… it first")
+        try:
+            got = self.ask_plugin(str(placed.get("plugin")), C.HOSTED_FILE, sid, "controller", "unlock")
+        except Refusal as e:
+            raise Refusal(f"its unlock password could not be read ({e}): once its setup ended, Jenkins deleted it, "
+                          "and you sign in as the admin you made") from None
+        text = str((got or {}).get("text") or "").strip()
+        if not text:
+            raise Refusal("its unlock password is not there: its setup has ended, or Jenkins has not made it yet")
+        return {"said": "Jenkins' unlock password, shown once: paste it into its setup page", "ok": True,
+                "lines": [text]}
+
     def settings_changed(self) -> None:
         """Its settings were just entered (the platform's Settings…, kept through the login): read anew at once, the
         address asked unsigned first."""
@@ -501,14 +579,30 @@ class JenkinsPlugin(MachinePlugin):
     # -- what the platform's page draws -------------------------------------------------------------------------------
     def _page(self, r: Reading) -> dict:
         summary, why, problem = self._said(r)
-        out: dict = {"present": r.found.installed or r.answered, "summary": summary, "valid": r.answered,
-                     "why": "" if r.answered else why}
+        out: dict = {"present": r.found.installed or r.answered or self.service_present(), "summary": summary,
+                     "valid": r.answered or self.service_valid(), "why": ""}
+        if not r.answered and why:
+            out["note"] = why  # said, never invalid: it can be placed in a container
         out.update(self._facts(r))
         out["tables"] = self._tables(r)
         buildable = [j for j in r.jobs or () if j.buildable]
         out["forms"] = [self._build_form(r, buildable)] if buildable else []
+        if self.app is not None:  # where it can run, asked of the container plugins through its app
+            svc = self.service_status()
+            out["tables"] += svc.get("tables") or []
+            out["forms"] += svc.get("forms") or []
+            out["forms"].append({"id": "unlock", "hook": "unlock", "title": "Unlock Jenkins' setup",
+                                 "fields": [{"name": "name", "label": "Service", "type": "fixed",
+                                             "value": self.SERVICE}],
+                                 "confirm": {"title": "Show the unlock password of {name}?",
+                                             "words": "Shown once, here: it is kept nowhere, logged nowhere, and "
+                                                      "Jenkins deletes it when its setup ends.", "yes": "Show it"}})
+            if self.service_present():
+                out.setdefault("actions", []).append({"form": "unlock", "title": "Unlock…",
+                                       "note": "the password that opens Jenkins' setup wizard, shown once"})
         out["actions"] = [{"hook": "refresh", "args": [], "title": "Read again",
-                           "note": f"asks Jenkins again now (what was read is kept {READ_S:g} s)"}]
+                           "note": f"asks Jenkins again now (what was read is kept {READ_S:g} s)"},
+                          *out.get("actions", [])]
         if problem:
             out["problem"] = problem
         return out
@@ -535,8 +629,9 @@ class JenkinsPlugin(MachinePlugin):
                 why = f"Jenkins does not answer at {t.base}: {r.why}. {self._start_words(f)}"
             elif f.looked:
                 summary = f"Jenkins is not installed here, and nothing answers at {t.base}"
-                why = (f"Jenkins is not installed here, and does not answer at {t.base} ({r.why}): install it (the "
-                       "table below says how), or set JENKINS_URL to where it runs")
+                why = (f"Jenkins is not installed here, and does not answer at {t.base} ({r.why}): Install… it in a "
+                       "container (below), or install it yourself (jenkins.io/download) and set JENKINS_URL to where it "
+                       "runs")
             else:
                 summary = f"Jenkins does not answer at {t.base}"
                 why = f"{r.why}: set JENKINS_URL to where Jenkins runs"
@@ -675,12 +770,6 @@ class JenkinsPlugin(MachinePlugin):
 
     def _tables(self, r: Reading) -> list[dict]:
         if not r.answered:
-            if r.target.base and not r.found.installed and not r.busy and r.status != 503:
-                return [{"title": "How to install Jenkins", "rows": here.install_rows(r.found.system),
-                         "columns": [{"title": "Step"}, {"title": "How"}],
-                         "note": ("Jenkins' own steps, from jenkins.io (read 2026-11-22): this plugin installs, starts "
-                                  "and stops nothing. Once Jenkins answers at its address, this page reads it."),
-                         "empty": ""}]
             return []
         on = f"at {r.target.base}"
         if not r.read:

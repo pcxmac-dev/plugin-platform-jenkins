@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.2.0 (2026-11-25)
+
+Jenkins in a container (Monday list item 34; service-containers-design §5.2, with the user's answers of 2026-11-25:
+"Containers only", an agent container beside each server, the setup wizard with its unlock password shown once,
+reporting to the makers off, images pinned by digest). Needs liminal-libs>=1.94.0 (ContainedService).
+
+- **Built on ContainedService**: Jenkins is installed, started, stopped, restarted, updated, rolled back, exposed,
+  removed and its data deleted only as a container, through the container plugin you pick (Docker first), each a plan
+  of that plugin's you approve on the page (the platform's dialog, 0.37.0; on an older one, that plugin's page, then
+  Carry it out… here). Its page lists where it can run (each container plugin's targets, their fit, why one is not
+  offered: not granted, stopped, reached over another address than this machine's), its services and their buttons.
+- **Its recipe** (recipe.py): the controller (port 8080, published on every address only when Install… or Expose… says
+  so, each plan asking again; its home in a volume; at most 2 GB; `-Dhudson.model.UsageStatistics.disabled=true`), and
+  once `JENKINS_AGENT_SECRET` is set (the secret of its node `liminal-agent`), an inbound agent beside it on the same
+  network over WebSocket, its secret by environment alone. Linux and Windows Server Core images, each by tag and
+  digest; the digests are not read yet (UNREAD), and Install… refuses until a release reads them from Docker Hub.
+- **Unlock…** (`unlock`, its page alone): the password of its setup wizard read from its container (hosted_file) and
+  shown once, kept nowhere.
+- **Its address**: `JENKINS_URL` when set, else its container's port at its here (127.0.0.1: the token goes to this
+  machine alone). A Jenkins you installed yourself is found and read as before; how to install one natively is a line,
+  not a table. Valid while it can be placed: not answering is a note (`note`), never invalid.
+- Known: liminal-libs 1.93.0's ContainerHost refuses a secret its own asker declares as a key (`_check_secrets`), so the
+  agent waits for that fix (its test is a strict xfail).
+- CI: the workflow is plugin-platform-sqlite's.
+
 ## 0.1.0 (2026-11-23)
 
 The first release: Jenkins for the platform, the first plugin of its Continuous Integration section (the user,

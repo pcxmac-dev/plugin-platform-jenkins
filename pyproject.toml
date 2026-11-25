@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "plugin-platform-jenkins"
-version = "0.1.0"  # the plugin's own release (CHANGELOG.md); the platform shows it on the plugin's page
+version = "0.2.0"  # the plugin's own release (CHANGELOG.md); the platform shows it on the plugin's page
 description = "Jenkins for Liminal: whether it is installed here or answers at its address, its version, its jobs, build queue and nodes, and a job's build once the platform's page confirms it."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -13,7 +13,9 @@ requires-python = ">=3.10"
 # redirect followed) and words a connection's trouble; 1.63.0 reads what it says of the interface it shares (READ_HOOKS,
 # the Internal API tab), which its tests hold it to; 1.66.0 holds an ask to its PAGE_ONLY_HOOKS (apps/asking.py: its
 # build, asked from its page alone)
-dependencies = ["liminal-libs>=1.66.0"]
+# redirect followed) ... ; 1.94.0: ContainedService, the base it is built on (its container through a container
+# plugin's plans, approved on the page)
+dependencies = ["liminal-libs>=1.94.0"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]

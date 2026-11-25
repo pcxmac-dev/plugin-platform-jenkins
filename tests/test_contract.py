@@ -49,8 +49,9 @@ def test_its_icon_is_jenkins_mark_once_the_library_draws_it():
 
 def test_its_hooks_are_the_machine_kinds_and_its_own():
     p = module.MACHINE
-    assert set(p.interface()["hooks"]) == {"present", "status", "refresh", "build"}
-    assert p.HOOKS[-2:] == ("refresh", "build") and p.READ_HOOKS == ("refresh",)
+    assert set(p.interface()["hooks"]) == {"present", "status", "refresh", "build", "unlock"} | {"hosts", "service_install", "service_change", "service_carry", "service_log", "service_forget"}
+    assert p.HOOKS[-3:] == ("refresh", "build", "unlock")
+    assert set(internal.declared(p, "READ_HOOKS")) >= {"refresh", "hosts", "service_log"}
     assert not any(h in p.interface()["hooks"] for h in ("setup", "run", "instances", "scan", "settings"))
 
 
@@ -59,7 +60,8 @@ def test_its_build_is_asked_from_its_page_alone():
     (PAGE_ONLY_HOOKS, liminal-libs 1.66.0); another plugin's ask, or one that names no asker, is refused. Its reads
     stay open to every asker. The command line calls the hook itself, through no app."""
     p = module.MACHINE
-    assert internal.page_only(p) == ("build",) and internal.plugin_only(p) == ()
+    assert set(internal.page_only(p)) == {"build", "unlock"} | ({"hosts", "service_install", "service_change", "service_carry", "service_log", "service_forget"} - {"hosts"})
+    assert internal.plugin_only(p) == ()
     assert asking.refusal(p, "build", asking.PAGE) == ""
     assert "never by another plugin: other asked it" in asking.refusal(p, "build", "other")
     assert asking.refusal(p, "build", None) and asking.refusal(p, "build", "mcp")
@@ -79,9 +81,9 @@ def test_what_it_says_of_its_interface_is_sound():
 
 
 def test_its_version_and_floor_are_pyprojects():
-    assert re.search(r'^version = "([^"]+)"', PYPROJECT, re.M).group(1) == module.__version__ == "0.1.0"
+    assert re.search(r'^version = "([^"]+)"', PYPROJECT, re.M).group(1) == module.__version__ == "0.2.0"
     floor = re.search(r'"liminal-libs>=([0-9.]+)"', PYPROJECT).group(1)
-    assert floor == "1.66.0"  # PAGE_ONLY_HOOKS, as apps/asking.py holds an ask to it
+    assert floor == "1.94.0"  # ContainedService, the base of a service plugin
     have = tuple(int(x) for x in liminal_libs.__version__.split(".")[:3])
     assert have >= tuple(int(x) for x in floor.split("."))  # this library is new enough
     assert re.search(r'^jenkins = "plugin_platform_jenkins"$', PYPROJECT, re.M)  # its entry point
@@ -95,10 +97,12 @@ def test_a_copy_the_registry_hands_out_shares_what_the_plugin_keeps():
 
 def test_its_settings_are_declared_as_the_login_reads_them():
     keys = {k.name: k for k in module.MACHINE.keys}
-    assert list(keys) == ["JENKINS_URL", "JENKINS_USER", "JENKINS_TOKEN"]
+    assert list(keys) == ["JENKINS_URL", "JENKINS_USER", "JENKINS_TOKEN", "JENKINS_AGENT_SECRET"]
     assert keys["JENKINS_TOKEN"].secret and not keys["JENKINS_URL"].secret and not keys["JENKINS_USER"].secret
-    assert [k.pair for k in keys.values()] == ["jenkins-url", "jenkins-user", "jenkins-token"]
+    assert keys["JENKINS_AGENT_SECRET"].secret
+    assert [k.pair for k in keys.values()] == ["jenkins-url", "jenkins-user", "jenkins-token", "jenkins-agent-secret"]
     assert [n for k in keys.values() for n in k.names] == ["JENKINS_URL", "JENKINS_USER", "JENKINS_USER_ID",
-                                                           "JENKINS_TOKEN", "JENKINS_API_TOKEN"]  # Jenkins CLI's too
+                                                           "JENKINS_TOKEN", "JENKINS_API_TOKEN",
+                                                           "JENKINS_AGENT_SECRET"]  # Jenkins CLI's too
     assert all(refusal(n) is None for k in keys.values() for n in k.names)  # none Windows', Python's or the app's own
     assert all(k.hint for k in keys.values())

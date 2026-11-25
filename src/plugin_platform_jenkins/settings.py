@@ -19,6 +19,7 @@ from .client import DEFAULT_PORT, DEFAULT_URL, Target
 URL = "JENKINS_URL"
 USER = "JENKINS_USER"
 TOKEN = "JENKINS_TOKEN"
+AGENT_SECRET = "JENKINS_AGENT_SECRET"  # 0.2.0: its agent container's secret (recipe.py)
 CLI_NAMES = {USER: "JENKINS_USER_ID", TOKEN: "JENKINS_API_TOKEN"}  # jenkins-cli.jar's own (Jenkins CLI, its -auth)
 TOKEN_PAGE = "your name, top right › Security › API Token › Add new Token (JENKINS_URL/me/security)"
 KEYS = (
@@ -29,6 +30,9 @@ KEYS = (
            hint="your Jenkins user ID, whose API token is below"),
     KeyVar(TOKEN, label="API token", aliases=(CLI_NAMES[TOKEN],),
            hint=f"an API token of that user ({TOKEN_PAGE}), never your password"),
+    KeyVar(AGENT_SECRET, label="Agent's secret",
+           hint=("optional: the secret Jenkins shows on the page of its node liminal-agent (Manage Jenkins › Nodes › "
+                 "New node, an inbound agent); once set, Install… puts its agent container beside Jenkins'")),
 )
 NAMES = tuple(n for k in KEYS for n in k.names)  # every name a setting is read by: its own, then Jenkins CLI's
 
@@ -37,12 +41,12 @@ def _control(text: str) -> bool:
     return any(ord(c) < 32 or ord(c) == 127 for c in text)
 
 
-def parse(values: Mapping[str, str], problems: Iterable[str] = ()) -> Target:
+def parse(values: Mapping[str, str], problems: Iterable[str] = (), default: str = "") -> Target:
     """The settings from their values by variable (one not set: left out, or empty): where Jenkins is asked
     (JENKINS_URL, the default unless set) and as whom, and what was wrong with them, in words that never hold the
     token."""
     said = list(problems)
-    url = str(values.get(URL) or "").strip() or DEFAULT_URL
+    url = str(values.get(URL) or "").strip() or default or DEFAULT_URL
     user = str(values.get(USER) or "").strip()
     token = str(values.get(TOKEN) or "").strip()
     if user and (":" in user or _control(user)):
@@ -62,15 +66,16 @@ def parse(values: Mapping[str, str], problems: Iterable[str] = ()) -> Target:
     return Target(base, host, port, tls, user, token, tuple(said))
 
 
-def read(login=None) -> Target:
+def read(login=None, default: str = "") -> Target:
     """The settings as `login` furnishes them (the login of the app the plugin is attached to), else an
     EnvironmentLogin's, each by the first of its names that is set (KeyVar.value); a login that cannot be asked
-    furnishes none, and says so (Jenkins is then asked at its default address, as no one)."""
+    furnishes none, and says so (Jenkins is then asked at its default address, as no one). `default`: where Jenkins
+    is asked when JENKINS_URL is not set (0.2.0: its container's port at its here, else DEFAULT_URL)."""
     asked = login if login is not None else EnvironmentLogin()
     try:
         values = asked.variables(NAMES)
     except Exception as e:  # noqa: BLE001 - a login that cannot be asked: nothing set, and why
-        return parse({}, (f"the settings could not be read from the login ({type(e).__name__}): {DEFAULT_URL} is "
-                          "asked, as no one",))
+        return parse({}, (f"the settings could not be read from the login ({type(e).__name__}): "
+                          f"{default or DEFAULT_URL} is asked, as no one",), default)
     found = values or {}
-    return parse({k.name: k.value(found) for k in KEYS if k.value(found)})
+    return parse({k.name: k.value(found) for k in KEYS if k.value(found)}, (), default)

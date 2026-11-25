@@ -1,5 +1,11 @@
 # plugin-platform-jenkins
 
+0.2.0 (liminal-libs 1.94.0's ContainedService): Jenkins runs only as containers, each change a plan of the container
+plugin's that you approve on the page. Install… puts Jenkins' controller (and, once `JENKINS_AGENT_SECRET` is set, an
+inbound agent) in containers through the container plugin you pick; Unlock… shows its setup wizard's password once.
+The native install steps below describe a Jenkins of your own, which is still found and read; this plugin installs
+nothing natively.
+
 Jenkins for Liminal: whether Jenkins is installed here or answers at its address, its version, and once it answers to
 you its jobs, build queue and nodes; a job's build asked once the platform's page has confirmed it.
 

@@ -64,28 +64,25 @@ def test_present_is_installed_here_or_answering(finders, installed):
 def test_not_here_says_how_to_install_it():
     p, j, _ = make(FakeJenkins(down=True), FakeFinders(system="windows"))
     s = p.status()
-    assert s["present"] is False and s["valid"] is False
+    assert s["present"] is False and s["valid"] is True and s["why"] == ""  # 0.2.0: it can be placed in a container
     assert s["summary"] == f"Jenkins is not installed here, and nothing answers at {BASE}"
-    assert "nothing listens at 127.0.0.1:8080" in s["why"] and "install it (the table below says how)" in s["why"]
-    t = table(s, "How to install Jenkins")
-    assert [r[0] for r in t["rows"]][:3] == ["Java", "Jenkins", "Unlock it"] and "installs, starts" in t["note"]
+    assert "nothing listens at 127.0.0.1:8080" in s["note"] and "Install… it in a container (below)" in s["note"]
+    assert "install it yourself (jenkins.io/download)" in s["note"] and s["tables"] == []  # no native install table
     assert s["forms"] == [] and s["installed"] == "not installed here" and len(j.asked) == 1
-    p, _, _ = make(FakeJenkins(down=True), FakeFinders(system="linux"))
-    assert [r[0] for r in table(p.status(), "How to install Jenkins")["rows"]][0] == "Debian, Ubuntu: Java"
     no_secret(s)
 
 
 def test_installed_but_not_answering_says_what_to_do():
     p, _, _ = make(FakeJenkins(down=True), FakeFinders(system="windows", service="stopped", files=(WAR,)))
     s = p.status()
-    assert s["present"] is True and s["valid"] is False and s["tables"] == []
+    assert s["present"] is True and s["valid"] is True and s["tables"] == []
     assert s["summary"] == f"Jenkins is installed here, but does not answer at {BASE}"
-    assert "Its service is stopped: start it from the Services app" in s["why"] and "starts nothing" in s["why"]
+    assert "Its service is stopped: start it from the Services app" in s["note"] and "starts nothing" in s["note"]
     assert s["installed"] == f"the Windows service jenkins (stopped) · its war file {WAR}"
     p, _, _ = make(FakeJenkins(down=True), FakeFinders(system="windows", service="running"))
-    assert "it may answer at another port" in p.status()["why"]
+    assert "it may answer at another port" in p.status()["note"]
     p, _, _ = make(FakeJenkins(down=True), FakeFinders(system="linux", unit="failed"))
-    assert "Its unit failed: journalctl -u jenkins says why" in p.status()["why"]
+    assert "Its unit failed: journalctl -u jenkins says why" in p.status()["note"]
 
 
 def test_a_war_file_alone_is_run_without_the_plugins_settings():
@@ -94,7 +91,7 @@ def test_a_war_file_alone_is_run_without_the_plugins_settings():
     for finders in (FakeFinders(system="windows", files=(WAR,)),
                     FakeFinders(system="linux", files=("/usr/share/java/jenkins.war",))):
         p, _, _ = make(FakeJenkins(down=True), finders)
-        why = p.status()["why"]
+        why = p.status()["note"]
         assert "java -jar jenkins.war" in why and "in a shell where JENKINS_USER and JENKINS_TOKEN are not set" in why
 
 
@@ -103,8 +100,8 @@ def test_while_jenkins_starts_it_is_said_so():
     failure, and with no advice of another port, nor how to install it."""
     p, j, _ = make(FakeJenkins(starting=True), FakeFinders(system="windows", service="running", files=(WAR,)))
     s = p.status()
-    assert s["valid"] is False and s["summary"] == f"Jenkins at {BASE} is starting or restarting (HTTP 503)"
-    assert "HTTP 503: Jenkins is starting or restarting, and answers once it is ready" in s["why"]
+    assert s["valid"] is True and s["summary"] == f"Jenkins at {BASE} is starting or restarting (HTTP 503)"
+    assert "HTTP 503: Jenkins is starting or restarting, and answers once it is ready" in s["note"]
     assert "failed" not in s["why"] and "another port" not in s["why"] and s["tables"] == []
     assert p.refresh()["said"] == f"Jenkins at {BASE} is starting or restarting (HTTP 503)"
     assert not any(signed(j))  # its page is no Jenkins' answer: the token waits
@@ -117,8 +114,8 @@ def test_while_jenkins_starts_it_is_said_so():
 def test_something_else_answering_is_not_jenkins():
     p, _, _ = make(FakeJenkins(jenkins=False, anonymous=True))
     s = p.status()
-    assert s["valid"] is False and "not as Jenkins does: its answer has no X-Jenkins header" in s["why"]
-    assert "the token was not sent to it" in s["why"]
+    assert s["valid"] is True and "not as Jenkins does: its answer has no X-Jenkins header" in s["note"]
+    assert "the token was not sent to it" in s["note"]
     assert s["signedIn"].startswith("not yet: alice's API token goes to")
 
 
@@ -154,7 +151,7 @@ def test_the_hold_on_an_address_ends_with_an_answer_without_x_jenkins():
     fake.jenkins, fake.anonymous = False, True  # Jenkins stopped; something else answers at its port
     p.refresh()
     assert signed(j)[4:] == [True]  # held until then: one GET, and no more, reaches what is not Jenkins
-    assert p.status()["valid"] is False
+    assert p.status()["valid"] is True
     p.refresh()
     clock.now += READ_S + 1
     p.status()
@@ -173,7 +170,7 @@ def test_no_answer_ends_the_hold_too():
     p.refresh()
     fake.down, fake.jenkins, fake.anonymous = False, False, True  # then something else listens at its port
     p.refresh()
-    assert signed(j)[-1] is False and p.status()["valid"] is False
+    assert signed(j)[-1] is False and p.status()["valid"] is True
 
 
 def test_reachable_without_a_token_it_says_how_to_sign_in():
@@ -305,15 +302,15 @@ def test_a_redirect_is_refused_and_said():
     assert "sending it on to https://sso.example.com/login: not followed" in s["problem"]
     assert len(j.asked) == 1 and j.asked[0][1].startswith(BASE + "/api/json")
     p, j, _ = make(FakeJenkins(redirect="https://sso.example.com/login", jenkins=False))
-    assert p.status()["valid"] is False and len(j.asked) == 1  # a proxy's redirect, no Jenkins behind it said
+    assert p.status()["valid"] is True and len(j.asked) == 1  # a proxy's redirect, no Jenkins behind it said
     assert not any(signed(j))
 
 
 def test_a_bad_address_is_said_and_nothing_asked():
     p, j, _ = make(env={"JENKINS_URL": "ftp://ci.example.com"})
     s = p.status()
-    assert s["valid"] is False and s["summary"] == "JENKINS_URL is not an address Jenkins is asked at" and j.asked == []
-    assert s["why"].startswith("JENKINS_URL is not an address Jenkins is asked at: an instance is asked over http")
+    assert s["valid"] is True and s["summary"] == "JENKINS_URL is not an address Jenkins is asked at" and j.asked == []
+    assert s["note"].startswith("JENKINS_URL is not an address Jenkins is asked at: an instance is asked over http")
 
 
 # -- what is kept --------------------------------------------------------------------------------------------------
@@ -357,8 +354,8 @@ def test_an_ask_waits_a_while_for_a_read_under_way_then_answers_without_it(monke
         assert said["ok"] is False and said["said"].startswith(f"Jenkins at {BASE} is being read by another ask")
         p._forget()
         s = p.status()
-        assert s["summary"] == f"Jenkins at {BASE} is being read" and s["valid"] is False and s["tables"] == []
-        assert "has waited more than 0.01 s for its answer" in s["why"] and len(j.asked) == 4
+        assert s["summary"] == f"Jenkins at {BASE} is being read" and s["valid"] is True and s["tables"] == []
+        assert "has waited more than 0.01 s for its answer" in s["note"] and len(j.asked) == 4
     finally:
         p._rt.reading_lock.release()
         worker.join(timeout=10)
