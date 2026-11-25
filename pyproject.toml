@@ -14,8 +14,8 @@ requires-python = ">=3.10"
 # the Internal API tab), which its tests hold it to; 1.66.0 holds an ask to its PAGE_ONLY_HOOKS (apps/asking.py: its
 # build, asked from its page alone)
 # redirect followed) ... ; 1.94.0: ContainedService, the base it is built on (its container through a container
-# plugin's plans, approved on the page)
-dependencies = ["liminal-libs>=1.94.0"]
+# plugin's plans, approved on the page); 1.95.0: a secret its own Settings set (its agent's) handed over
+dependencies = ["liminal-libs>=1.95.0"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]

@@ -77,10 +77,8 @@ def test_an_install_runs_jenkins_with_its_usage_statistics_off_and_waits_for_its
     assert p.placement("ci")["state"] == "installed"
 
 
-@pytest.mark.xfail(strict=True, raises=Refusal, reason=(
-    "liminal-libs 1.93.0 ContainerHost._check_secrets takes a pair the asker itself declares (its keys) for another "
-    "plugin's: until that is fixed, a secret set through its own Settings is refused (reported with 0.2.0)"))
 def test_its_agent_comes_beside_it_once_its_secret_is_set_and_never_on_a_command_line(tmp_path):
+    # its own Settings' secret is its own to hand over since liminal-libs 1.95.0 (1.93.0 took it for another plugin's)
     secret = "9f8e7d6c5b4a39281706f5e4d3c2b1a0aa"
     w, p = world(tmp_path, pairs={"JENKINS_AGENT_SECRET": secret})
     w.grant()

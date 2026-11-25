@@ -83,7 +83,7 @@ def test_what_it_says_of_its_interface_is_sound():
 def test_its_version_and_floor_are_pyprojects():
     assert re.search(r'^version = "([^"]+)"', PYPROJECT, re.M).group(1) == module.__version__ == "0.2.0"
     floor = re.search(r'"liminal-libs>=([0-9.]+)"', PYPROJECT).group(1)
-    assert floor == "1.94.0"  # ContainedService, the base of a service plugin
+    assert floor == "1.95.0"  # ContainedService (1.94.0), and its agent's secret handed over (1.95.0's fix)
     have = tuple(int(x) for x in liminal_libs.__version__.split(".")[:3])
     assert have >= tuple(int(x) for x in floor.split("."))  # this library is new enough
     assert re.search(r'^jenkins = "plugin_platform_jenkins"$', PYPROJECT, re.M)  # its entry point

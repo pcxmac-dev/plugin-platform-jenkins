@@ -4,7 +4,8 @@
 
 Jenkins in a container (Monday list item 34; service-containers-design §5.2, with the user's answers of 2026-11-25:
 "Containers only", an agent container beside each server, the setup wizard with its unlock password shown once,
-reporting to the makers off, images pinned by digest). Needs liminal-libs>=1.94.0 (ContainedService).
+reporting to the makers off, images pinned by digest). Needs liminal-libs>=1.95.0 (ContainedService, 1.94.0; its
+agent's secret, set in its own Settings, handed over: 1.95.0 fixed the base refusing it as another plugin's).
 
 - **Built on ContainedService**: Jenkins is installed, started, stopped, restarted, updated, rolled back, exposed,
   removed and its data deleted only as a container, through the container plugin you pick (Docker first), each a plan
