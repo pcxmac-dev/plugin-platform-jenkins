@@ -30,18 +30,18 @@ HUB = "https://hub.docker.com/r/"
 # the pins, by system: (part, reference, digest, its size in bytes when known); read when this release was made
 PINS = {
     "linux": {
-        "controller": dict(ref="docker.io/jenkins/jenkins:2.580.2-lts-jdk21", digest=UNREAD, system="linux",
+        "controller": dict(ref="docker.io/jenkins/jenkins:2.580.2-lts-jdk21", digest="sha256:74401de6a6f92e1afe1b02d1c8e3d0c33f263bfb5275dd8813f9150355f2367b", size=243724062, system="linux",
                            platforms=["linux/amd64", "linux/arm64"], version="2.580.2", licence="MIT",
                            page=HUB + "jenkins/jenkins", tar=True),
-        "agent": dict(ref="docker.io/jenkins/inbound-agent:latest-jdk21", digest=UNREAD, system="linux",
+        "agent": dict(ref="docker.io/jenkins/inbound-agent:latest-jdk21", digest="sha256:38be636e3564556ded40bf0a1bcac52fd5c10e18e45997094cb4819e7bef6234", size=151876550, system="linux",
                       platforms=["linux/amd64", "linux/arm64"], licence="MIT", page=HUB + "jenkins/inbound-agent",
                       tar=True),
     },
     "windows": {
-        "controller": dict(ref="docker.io/jenkins/jenkins:2.580.2-lts-windowsservercore-ltsc2022", digest=UNREAD,
+        "controller": dict(ref="docker.io/jenkins/jenkins:2.580.2-windowsservercore-ltsc2022", digest="sha256:442ba44321d1400dad55f514881f67967277b64e04ee36cc7dae94abcb8a1378", size=2544552783,
                            system="windows", platforms=["windows/amd64"], os_build=20348, version="2.580.2",
                            licence="MIT", page=HUB + "jenkins/jenkins", tar=False),
-        "agent": dict(ref="docker.io/jenkins/inbound-agent:windowsservercore-ltsc2022", digest=UNREAD,
+        "agent": dict(ref="docker.io/jenkins/inbound-agent:windowsservercore-ltsc2022", digest="sha256:78dfd65993ce5d8084663551c2ab53e3db941f74e13e22c5bd63e647c9507333", size=2436601105,
                       system="windows", platforms=["windows/amd64"], os_build=20348, licence="MIT",
                       page=HUB + "jenkins/inbound-agent", tar=False),
     },

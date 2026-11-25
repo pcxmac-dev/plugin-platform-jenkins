@@ -4,6 +4,8 @@ a stand-in firewall and WSL plugin) and Jenkins as FakeJenkins: no docker, no pr
 gates has a test that fails when the gate is taken out."""
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from liminal_libs.apps.asking import AskRefused
@@ -54,7 +56,7 @@ def install(w, *args):
 def test_its_shipped_pins_are_by_tag_and_digest_and_none_is_installed_before_its_digest_is_read(tmp_path):
     for system, parts in recipe.PINS.items():
         for part, pin in parts.items():
-            assert pin["ref"].startswith("docker.io/jenkins/") and pin["digest"] == UNREAD and pin["system"] == system
+            assert pin["ref"].startswith("docker.io/jenkins/") and re.fullmatch(r"sha256:[0-9a-f]{64}", pin["digest"]) and pin["digest"] != UNREAD and pin["size"] > 0 and pin["system"] == system
     w, p = world(tmp_path, digest=UNREAD)
     w.grant()
     with pytest.raises(Refusal, match="not pinned by digest yet"):
